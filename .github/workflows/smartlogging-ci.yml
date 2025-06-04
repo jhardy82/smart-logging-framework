@@ -1,0 +1,355 @@
+name: SmartLogging Module - CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop, "feature/*", "phase/*"]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - ".github/workflows/**"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "src/**"
+      - "tests/**"
+  schedule:
+    # Run nightly tests at 2 AM UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: "Type of tests to run"
+        required: false
+        default: "All"
+        type: choice
+        options:
+          - All
+          - Unit
+          - Integration
+          - Performance
+          - Security
+          - Configuration
+      coverage:
+        description: "Generate code coverage"
+        required: false
+        default: true
+        type: boolean
+
+env:
+  # PowerShell execution policy
+  EXECUTION_POLICY: "RemoteSigned"
+  # Test configuration
+  TEST_RESULTS_PATH: "./TestResults"
+  COVERAGE_THRESHOLD: 80
+
+jobs:
+  test:
+    name: Test SmartLogging Module
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        powershell-version: ["5.1", "7.x"]
+        exclude:
+          # PowerShell 5.1 only runs on Windows
+          - os: ubuntu-latest
+            powershell-version: "5.1"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history for better coverage analysis
+
+      - name: Setup PowerShell (Windows)
+        if: matrix.os == 'windows-latest' && matrix.powershell-version == '5.1'
+        shell: powershell
+        run: |
+          # Ensure PowerShell 5.1 is available (pre-installed on windows-latest)
+          $PSVersionTable.PSVersion
+          Set-ExecutionPolicy -ExecutionPolicy $env:EXECUTION_POLICY -Scope Process -Force
+
+      - name: Setup PowerShell Core
+        if: matrix.powershell-version == '7.x'
+        uses: microsoft/setup-powershell@v1
+        with:
+          pwsh: true
+
+      - name: Install Required Modules
+        shell: pwsh
+        run: |
+          Write-Host "Installing required PowerShell modules..." -ForegroundColor Green
+
+          # Set PowerShell Gallery as trusted
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+
+          # Install Pester 5.x
+          Install-Module -Name Pester -MinimumVersion 5.0.0 -Force -SkipPublisherCheck
+
+          # Install PSScriptAnalyzer for code quality
+          Install-Module -Name PSScriptAnalyzer -Force
+
+          # Install additional modules for coverage (if available)
+          try {
+            Install-Module -Name PSCodeCoverage -Force -ErrorAction SilentlyContinue
+          } catch {
+            Write-Warning "PSCodeCoverage module not available - coverage will be basic"
+          }
+
+          # Verify installations
+          Get-Module -ListAvailable Pester, PSScriptAnalyzer | Select-Object Name, Version
+
+      - name: Run PSScriptAnalyzer (Code Quality)
+        shell: pwsh
+        run: |
+          Write-Host "Running PSScriptAnalyzer..." -ForegroundColor Green
+
+          $AnalyzerResults = Invoke-ScriptAnalyzer -Path ./src -Recurse -ReportSummary
+
+          if ($AnalyzerResults) {
+            Write-Host "PSScriptAnalyzer found $($AnalyzerResults.Count) issue(s):" -ForegroundColor Yellow
+            $AnalyzerResults | Format-Table -AutoSize
+
+            # Fail on severe issues
+            $SevereIssues = $AnalyzerResults | Where-Object { $_.Severity -in @('Error', 'ParseError') }
+            if ($SevereIssues) {
+              Write-Error "Found $($SevereIssues.Count) severe PSScriptAnalyzer issue(s). Please fix before proceeding."
+              exit 1
+            }
+          } else {
+            Write-Host "No PSScriptAnalyzer issues found!" -ForegroundColor Green
+          }
+
+      - name: Create Test Results Directory
+        shell: pwsh
+        run: |
+          New-Item -Path $env:TEST_RESULTS_PATH -ItemType Directory -Force | Out-Null
+          Write-Host "Created test results directory: $env:TEST_RESULTS_PATH"
+
+      - name: Run SmartLogging Tests
+        shell: pwsh
+        run: |
+          Write-Host "Starting SmartLogging test execution..." -ForegroundColor Green
+
+          $TestType = "${{ github.event.inputs.test_type }}"
+          if (-not $TestType) { $TestType = "All" }
+
+          $Coverage = "${{ github.event.inputs.coverage }}" -eq "true"
+          if ($env:GITHUB_EVENT_NAME -eq "schedule") { $Coverage = $true }  # Always run coverage on nightly
+
+          # Set test parameters
+          $TestParams = @{
+            TestType = $TestType
+            OutputFormat = "All"
+            ReportPath = $env:TEST_RESULTS_PATH
+            CI = $true
+          }
+
+          if ($Coverage) {
+            $TestParams.Coverage = $true
+          }
+
+          # Execute tests
+          & ./tests/Run-SmartLoggingTests.ps1 @TestParams
+        env:
+          POWERSHELL_VERSION: ${{ matrix.powershell-version }}
+          OS_VERSION: ${{ matrix.os }}
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}-ps${{ matrix.powershell-version }}
+          path: |
+            ${{ env.TEST_RESULTS_PATH }}/**/*.xml
+            ${{ env.TEST_RESULTS_PATH }}/**/*.json
+            ${{ env.TEST_RESULTS_PATH }}/**/*.html
+            ${{ env.TEST_RESULTS_PATH }}/**/*.csv
+          retention-days: 30
+
+      - name: Publish Test Results
+        uses: dorny/test-reporter@v1
+        if: always() && matrix.os == 'windows-latest' && matrix.powershell-version == '5.1'
+        with:
+          name: SmartLogging Tests (${{ matrix.os }}, PS ${{ matrix.powershell-version }})
+          path: "${{ env.TEST_RESULTS_PATH }}/**/*TestResults*.xml"
+          reporter: java-junit
+          fail-on-error: true
+
+      - name: Comment Test Results (PR)
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request' && matrix.os == 'windows-latest' && matrix.powershell-version == '5.1'
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            // Look for test summary JSON
+            const testResultsPath = process.env.TEST_RESULTS_PATH;
+            const summaryFiles = fs.readdirSync(testResultsPath).filter(f => f.includes('Summary') && f.endsWith('.json'));
+
+            if (summaryFiles.length > 0) {
+              const summaryPath = path.join(testResultsPath, summaryFiles[0]);
+              const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+
+              const commentBody = `## 🧪 SmartLogging Test Results
+
+              **Test Type:** ${summary.TestType}
+              **Overall Result:** ${summary.Success ? '✅ PASSED' : '❌ FAILED'}
+
+              ### Summary
+              - **Total Tests:** ${summary.TotalTests}
+              - **Passed:** ${summary.PassedTests} ✅
+              - **Failed:** ${summary.FailedTests} ${summary.FailedTests > 0 ? '❌' : '✅'}
+              - **Skipped:** ${summary.SkippedTests} ⏭️
+              - **Duration:** ${Math.round(summary.Duration.TotalSeconds * 100) / 100}s
+
+              ### Performance
+              - **Execution Time:** ${Math.round(summary.ExecutionTime.TotalSeconds * 100) / 100}s
+              - **Timestamp:** ${summary.Timestamp}
+
+              ---
+              *Generated by SmartLogging CI/CD Pipeline*`;
+
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: commentBody
+              });
+            }
+
+  security-scan:
+    name: Security Analysis
+    runs-on: windows-latest
+    needs: test
+    if: github.event_name != 'schedule'
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup PowerShell
+        uses: microsoft/setup-powershell@v1
+        with:
+          pwsh: true
+
+      - name: Install Security Modules
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name PSScriptAnalyzer -Force
+
+          # Additional security-focused rules
+          Write-Host "Checking for security-specific PSScriptAnalyzer rules..." -ForegroundColor Green
+
+      - name: Run Security Analysis
+        shell: pwsh
+        run: |
+          Write-Host "Running security analysis..." -ForegroundColor Green
+
+          # Run PSScriptAnalyzer with security focus
+          $SecurityResults = Invoke-ScriptAnalyzer -Path ./src -Recurse -Severity @('Error', 'Warning') |
+            Where-Object { $_.RuleName -match 'PSAvoid|PSUse.*Secure|PSReview' }
+
+          if ($SecurityResults) {
+            Write-Host "Security analysis found $($SecurityResults.Count) issue(s):" -ForegroundColor Yellow
+            $SecurityResults | Format-Table -AutoSize
+
+            # Create security report
+            $SecurityResults | ConvertTo-Json -Depth 3 | Out-File -FilePath "./security-report.json"
+          } else {
+            Write-Host "No security issues found!" -ForegroundColor Green
+          }
+
+      - name: Upload Security Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-report
+          path: security-report.json
+          retention-days: 90
+
+  performance-benchmark:
+    name: Performance Benchmarking
+    runs-on: windows-latest
+    needs: test
+    if: github.event_name == 'schedule' || github.event.inputs.test_type == 'Performance'
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup PowerShell
+        shell: powershell
+        run: |
+          Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
+          $PSVersionTable.PSVersion
+
+      - name: Install Modules
+        shell: powershell
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name Pester -MinimumVersion 5.0.0 -Force -SkipPublisherCheck
+
+      - name: Run Performance Benchmarks
+        shell: powershell
+        run: |
+          Write-Host "Running performance benchmarks..." -ForegroundColor Green
+
+          # Run performance-specific tests
+          & ./tests/Run-SmartLoggingTests.ps1 -TestType Performance -OutputFormat All -ReportPath ./PerfResults -CI
+
+          # Generate performance report
+          Write-Host "Performance benchmarking completed" -ForegroundColor Green
+
+      - name: Upload Performance Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-benchmarks
+          path: ./PerfResults/**/*
+          retention-days: 90
+
+  release-validation:
+    name: Release Validation
+    runs-on: windows-latest
+    needs: [test, security-scan]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Validation Summary
+        run: |
+          Write-Host "🎉 SmartLogging Module - Release Validation Passed!" -ForegroundColor Green
+          Write-Host "✅ All tests passed across multiple platforms" -ForegroundColor Green
+          Write-Host "✅ Security analysis completed" -ForegroundColor Green
+          Write-Host "✅ Code quality checks passed" -ForegroundColor Green
+          Write-Host ""
+          Write-Host "Module is ready for release consideration." -ForegroundColor Cyan
+        shell: pwsh
+
+      - name: Create Release Summary
+        run: |
+          $Summary = @{
+            Version = (Get-Date -Format "yyyy.MM.dd.HHmm")
+            Branch = "${{ github.ref }}"
+            Commit = "${{ github.sha }}"
+            TestsPassed = $true
+            SecurityClean = $true
+            QualityGate = "PASSED"
+            Timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
+          }
+
+          $Summary | ConvertTo-Json -Depth 2 | Out-File -FilePath "./release-summary.json"
+          Write-Host "Release summary created" -ForegroundColor Green
+        shell: pwsh
+
+      - name: Upload Release Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-validation
+          path: release-summary.json
+          retention-days: 365

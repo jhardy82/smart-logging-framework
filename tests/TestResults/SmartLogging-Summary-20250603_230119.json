@@ -1,0 +1,36 @@
+﻿{
+    "TestType":  "All",
+    "TotalTests":  144,
+    "PassedTests":  77,
+    "FailedTests":  67,
+    "SkippedTests":  0,
+    "PendingTests":  null,
+    "Duration":  {
+                     "Ticks":  191568667,
+                     "Days":  0,
+                     "Hours":  0,
+                     "Milliseconds":  156,
+                     "Minutes":  0,
+                     "Seconds":  19,
+                     "TotalDays":  0.00022172299421296295,
+                     "TotalHours":  0.0053213518611111106,
+                     "TotalMilliseconds":  19156.866700000002,
+                     "TotalMinutes":  0.31928111166666667,
+                     "TotalSeconds":  19.1568667
+                 },
+    "Success":  false,
+    "ExecutionTime":  {
+                          "Ticks":  201283096,
+                          "Days":  0,
+                          "Hours":  0,
+                          "Milliseconds":  128,
+                          "Minutes":  0,
+                          "Seconds":  20,
+                          "TotalDays":  0.00023296654629629629,
+                          "TotalHours":  0.0055911971111111108,
+                          "TotalMilliseconds":  20128.3096,
+                          "TotalMinutes":  0.33547182666666669,
+                          "TotalSeconds":  20.128309599999998
+                      },
+    "Timestamp":  "2025-06-03 23:01:39"
+}

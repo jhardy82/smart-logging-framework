@@ -21,53 +21,96 @@
 #region Module Initialization
 $Script:Context = $null
 $Script:PerformanceTimers = @{}
+$Script:PreservedCrossToolData = $null
+
+# Import ContextForge helper functions
+$ContextForgeHelpers = Join-Path $PSScriptRoot "ContextForge.Helpers.ps1"
+if (Test-Path $ContextForgeHelpers) {
+    . $ContextForgeHelpers
+    Write-Verbose "ContextForge helpers loaded successfully"
+} else {
+    Write-Warning "ContextForge helpers not found at: $ContextForgeHelpers"
+}
+#endregion Module Initialization
 
 #region Smart Logging Configuration
-$Script:LoggingConfig = [PSCustomObject]@{
-    # Enhanced Environment Detection
-    IsProduction = $env:COMPUTERNAME -match '(PROD|PRD|CORP|ENTERPRISE|AVANADE)' -or
-                   $env:USERDNSDOMAIN -match '(corp|avanade|production)' -or
-                   ($PWD.Path -notmatch 'OneDrive|Development|Dev|temp|test' -and $env:USERPROFILE -notmatch 'OneDrive')
-    
-    IsDevelopment = $PWD.Path -match '(OneDrive|Development|Dev|temp|test)' -or 
-                    $env:USERPROFILE -match 'OneDrive' -or
-                    $env:NODE_ENV -eq 'development'
-    
-    IsCI = $env:CI -eq 'true' -or 
-           $env:GITHUB_ACTIONS -eq 'true' -or 
-           $env:AZURE_PIPELINES -eq 'true' -or
-           $env:TF_BUILD -eq 'true'
+# Load ContextForge configuration if available
+$ContextForgeConfig = Get-ContextForgeConfig -ErrorAction SilentlyContinue
 
-    # Enhanced Logging Strategies
-    LogLevel = if ($env:LOG_LEVEL) { $env:LOG_LEVEL }
-               elseif ($env:COMPUTERNAME -match '(PROD|PRD|CORP|ENTERPRISE|AVANADE)') { 'INFO' }
-               elseif ($PWD.Path -match '(OneDrive|Development|Dev|temp|test)') { 'DEBUG' }
-               else { 'INFO' }
+$Script:LoggingConfig = [PSCustomObject]@{
+    # Enhanced Environment Detection with ContextForge integration
+    IsProduction         = Get-OrElse -Value $ContextForgeConfig.Environment -Default (
+        $env:COMPUTERNAME -match '(PROD|PRD|CORP|ENTERPRISE|AVANADE)' -or
+        $env:USERDNSDOMAIN -match '(corp|avanade|production)' -or
+        ($PWD.Path -notmatch 'OneDrive|Development|Dev|temp|test' -and $env:USERPROFILE -notmatch 'OneDrive')
+    )
+    IsDevelopment        = Get-OrElse -Value $ContextForgeConfig.IsDevelopment -Default (
+        $PWD.Path -match '(OneDrive|Development|Dev|temp|test)' -or
+        $env:USERPROFILE -match 'OneDrive' -or
+        $env:NODE_ENV -eq 'development'
+    )
+
+    IsCI                 = Get-OrElse -Value $ContextForgeConfig.IsCI -Default (
+        $env:CI -eq 'true' -or
+        $env:GITHUB_ACTIONS -eq 'true' -or
+        $env:AZURE_PIPELINES -eq 'true' -or
+        $env:TF_BUILD -eq 'true'
+    )
+    # Enhanced Logging Strategies with ContextForge fallbacks
+    LogLevel             = if ($ContextForgeConfig.LogLevel) {
+        $ContextForgeConfig.LogLevel
+    } elseif ($env:LOG_LEVEL) {
+        $env:LOG_LEVEL
+    } elseif ($env:COMPUTERNAME -match '(PROD|PRD|CORP|ENTERPRISE|AVANADE)') {
+        'INFO'
+    } elseif ($PWD.Path -match '(OneDrive|Development|Dev|temp|test)') {
+        'DEBUG'
+    } else {
+        'INFO'
+    }
 
     # Output Control
-    SuppressVerbose = -not ($VerbosePreference -eq 'Continue')
-    UseInteractiveOutput = $Host.UI.SupportsVirtualTerminal -and 
-                          -not ($env:CI -eq 'true' -or $env:GITHUB_ACTIONS -eq 'true')
+    SuppressVerbose      = -not ($VerbosePreference -eq 'Continue')
+    UseInteractiveOutput = $Host.UI.SupportsVirtualTerminal -and
+    -not ($env:CI -eq 'true' -or $env:GITHUB_ACTIONS -eq 'true')    # Enhanced File Management with ContextForge configuration
+    MaxLogSizeMB         = if ($ContextForgeConfig.MaxLogSizeMB) {
+        $ContextForgeConfig.MaxLogSizeMB
+    } elseif ($env:COMPUTERNAME -match '(PROD|PRD|CORP)') {
+        100
+    } else {
+        50
+    }
 
-    # Enhanced File Management
-    MaxLogSizeMB = if ($env:COMPUTERNAME -match '(PROD|PRD|CORP)') { 100 } else { 50 }
-    LogRetentionDays = if ($env:COMPUTERNAME -match '(PROD|PRD|CORP)') { 90 } else { 30 }
-    EnableLogRotation = $true
-    EnableCompression = $true
-    
-    # Cross-platform paths
-    DefaultLogBase = if ($IsWindows -or $env:OS -eq 'Windows_NT') { 'C:\temp\logs' } else { '/tmp/logs' }
+    LogRetentionDays     = if ($ContextForgeConfig.LogRetentionDays) {
+        $ContextForgeConfig.LogRetentionDays
+    } elseif ($env:COMPUTERNAME -match '(PROD|PRD|CORP)') {
+        90
+    } else {
+        30
+    }
+    EnableLogRotation    = if ($null -ne $ContextForgeConfig.EnableLogRotation) { $ContextForgeConfig.EnableLogRotation } else { $true }
+    EnableCompression    = if ($null -ne $ContextForgeConfig.EnableCompression) { $ContextForgeConfig.EnableCompression } else { $true }
+
+    # Cross-platform paths with ContextForge configuration support
+    DefaultLogBase       = if ($ContextForgeConfig.LogBasePath) {
+        $ContextForgeConfig.LogBasePath
+    } elseif ($IsWindows -or $env:OS -eq 'Windows_NT') {
+        'C:\temp\logs'
+    } else {
+        '/tmp/logs'
+    }
 }
 #endregion Smart Logging Configuration
 
 #region Core Logging Functions
 <#
 .SYNOPSIS
-    Writes a structured log message with specified level and component.
+    Writes a structured log message with ContextForge enterprise integration support.
 
 .DESCRIPTION
-    Advanced logging function providing structured logging with support for multiple
-    log levels, components, output destinations, and cross-platform compatibility.
+    Advanced logging function providing structured logging with ContextForge enterprise integration,
+    including performance tracking, enterprise context fields, and cross-tool communication support.
+    Supports multiple log levels, components, output destinations, and cross-platform compatibility.
 
 .PARAMETER Message
     The message to log. This parameter is mandatory.
@@ -90,6 +133,14 @@ $Script:LoggingConfig = [PSCustomObject]@{
 .PARAMETER Data
     Additional structured data to include in the log entry.
 
+.PARAMETER UserImpact
+    Enterprise context: Impact level on users (None, Low, Medium, High, Critical).
+    Used for ContextForge integration and enterprise reporting.
+
+.PARAMETER OperationId
+    Enterprise context: Unique identifier for operation tracking and correlation.
+    Auto-generated if not provided when ContextForge integration is available.
+
 .EXAMPLE
     Write-SmartLog -Message "Process completed successfully" -Level "SUCCESS"
 
@@ -99,7 +150,21 @@ $Script:LoggingConfig = [PSCustomObject]@{
 .EXAMPLE
     Write-SmartLog -Message "User action" -Level "INFO" -Data @{UserId="123"; Action="Login"}
 
+.EXAMPLE
+    # ContextForge enterprise integration
+    Write-SmartLog -Message "Deployment step completed" -Level "INFO" -UserImpact "Medium" -OperationId "DEPLOY-2024-001"
+
+.EXAMPLE
+    # Performance-tracked operation with enterprise context
+    Write-SmartLog -Message "Database migration started" -Level "INFO" -Component "Migration" -UserImpact "High" -Data @{
+        Database = "Production"
+        EstimatedDuration = "30 minutes"
+        MaintenanceWindow = $true
+    }
+
 .NOTES
+    Enhanced with ContextForge integration for enterprise-grade logging with performance tracking,
+    correlation IDs, deployment phase awareness, and cross-tool communication capabilities.
     Requires Initialize-SmartLogging to be called first to set up logging configuration.
 #>
 function Write-SmartLog {
@@ -110,10 +175,8 @@ function Write-SmartLog {
 
         [Parameter(Mandatory = $false)]
         [ValidateSet("DEBUG", "INFO", "WARN", "ERROR", "SUCCESS", "PROGRESS")]
-        [string]$Level = "INFO",
-
-        [Parameter(Mandatory = $false)]
-        [string]$Component = ($MyInvocation.PSCommandPath | Split-Path -Leaf),
+        [string]$Level = "INFO", [Parameter(Mandatory = $false)]
+        [string]$Component = "SmartLogging",
 
         [Parameter(Mandatory = $false)]
         [switch]$ToConsoleOnly,
@@ -122,75 +185,151 @@ function Write-SmartLog {
         [switch]$ToFileOnly,
 
         [Parameter(Mandatory = $false)]
-        [switch]$SkipTimestamp,
+        [switch]$SkipTimestamp, [Parameter(Mandatory = $false)]
+        [hashtable]$Data = @{},
 
         [Parameter(Mandatory = $false)]
-        [hashtable]$Data = @{}
+        [ValidateSet("None", "Low", "Medium", "High", "Critical")]
+        [string]$UserImpact = "None",
+
+        [Parameter(Mandatory = $false)]
+        [string]$OperationId
     )
 
-    # Structured log entry
-    $Timestamp = if (-not $SkipTimestamp) { Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff" } else { "" }
-    $ProcessId = $PID
-    $ThreadId = [System.Threading.Thread]::CurrentThread.ManagedThreadId
-    $User = if ($env:USERNAME) { $env:USERNAME } else { $env:USER }
-
-    # Create structured entry for file logging
-    $StructuredEntry = if ($SkipTimestamp) {
-        "[$Level] [$Component] $Message"
-    } else {
-        "$Timestamp [$Level] [$($ProcessId):$($ThreadId)] [$User] [$Component] $Message"
+    begin {
+        # Start performance tracking for log operation
+        $logTimer = [System.Diagnostics.Stopwatch]::StartNew()
     }
+    process {
+        # Auto-detect component from calling script if not provided or default
+        if ($Component -eq "SmartLogging" -and $MyInvocation.PSCommandPath) {
+            $Component = $MyInvocation.PSCommandPath | Split-Path -Leaf
+        }
 
-    # Add structured data if provided
-    if ($Data.Count -gt 0) {
-        $DataJson = $Data | ConvertTo-Json -Compress
-        $StructuredEntry += " | Data: $DataJson"
-    }
+        # ContextForge enterprise integration - generate OperationId if not provided
+        if (-not $OperationId -and $Script:Context -and $Script:Context.InstanceId) {
+            $OperationId = "LOG-$($Script:Context.InstanceId.ToString().Substring(0,8))-$(Get-Date -Format 'HHmmss')"
+        }    # Enhanced enterprise context from ContextForge integration
+        $EnterpriseContext = @{}
+        if ($Script:Context) {
+            $EnterpriseContext = @{
+                InstanceId      = if ($Script:Context.InstanceId) { $Script:Context.InstanceId } else { $null }
+                DeploymentPhase = if ($Script:Context.DeploymentPhase) { $Script:Context.DeploymentPhase } else { 'Development' }
+                ToolName        = if ($Script:Context.ToolName) { $Script:Context.ToolName } else { $Script:Context.ScriptName }
+                UserImpact      = $UserImpact
+                OperationId     = $OperationId
+            }
+        }
 
-    # Clean entry for console
-    $CleanEntry = if ($SkipTimestamp) {
-        "[$Level] $Message"
-    } else {
-        "$(Get-Date -Format "HH:mm:ss") [$Level] $Message"
-    }
+        # Structured log entry with enhanced ContextForge integration
+        $Timestamp = if (-not $SkipTimestamp) { Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff" } else { "" }
+        $ProcessId = $PID
+        $ThreadId = [System.Threading.Thread]::CurrentThread.ManagedThreadId
+        $User = if ($env:USERNAME) { $env:USERNAME } else { $env:USER }
 
-    # Console output with level-based filtering
-    if (-not $ToFileOnly -and $Script:LoggingConfig.UseInteractiveOutput) {
-        $ShowConsole = $Level -in @('WARN', 'ERROR', 'SUCCESS', 'PROGRESS') -or
-                       $VerbosePreference -eq 'Continue' -or
+        # Create comprehensive structured entry for file logging
+        $StructuredEntry = if ($SkipTimestamp) {
+            "[$Level] [$Component] $Message"
+        } else {
+            "$Timestamp [$Level] [$($ProcessId):$($ThreadId)] [$User] [$Component] $Message"
+        }
+
+        # Add enterprise context for ContextForge integration
+        if ($EnterpriseContext.InstanceId) {
+            $ContextFields = @()
+            if ($EnterpriseContext.InstanceId) { $ContextFields += "InstanceId=$($EnterpriseContext.InstanceId.ToString().Substring(0,8))" }
+            if ($EnterpriseContext.DeploymentPhase) { $ContextFields += "Phase=$($EnterpriseContext.DeploymentPhase)" }
+            if ($EnterpriseContext.ToolName) { $ContextFields += "Tool=$($EnterpriseContext.ToolName)" }
+            if ($UserImpact -ne "None") { $ContextFields += "UserImpact=$UserImpact" }
+            if ($OperationId) { $ContextFields += "OpId=$OperationId" }
+
+            if ($ContextFields.Count -gt 0) {
+                $StructuredEntry += " | Context: $($ContextFields -join ', ')"
+            }
+        }
+
+        # Add structured data if provided
+        if ($Data.Count -gt 0) {
+            $DataJson = $Data | ConvertTo-Json -Compress
+            $StructuredEntry += " | Data: $DataJson"
+        }
+
+        # Clean entry for console
+        $CleanEntry = if ($SkipTimestamp) {
+            "[$Level] $Message"
+        } else {
+            "$(Get-Date -Format "HH:mm:ss") [$Level] $Message"
+        }
+
+        # Console output with level-based filtering
+        if (-not $ToFileOnly -and $Script:LoggingConfig.UseInteractiveOutput) {
+            $ShowConsole = $Level -in @('WARN', 'ERROR', 'SUCCESS', 'PROGRESS') -or
+            $VerbosePreference -eq 'Continue' -or
                        ($Level -eq 'INFO' -and -not $Script:LoggingConfig.SuppressVerbose)
 
-        if ($ShowConsole) {
-            if ($PSVersionTable.PSVersion.Major -ge 5) {
-                Write-Information $CleanEntry -InformationAction Continue
-            } else {
-                Write-Output $CleanEntry
+            if ($ShowConsole) {
+                if ($PSVersionTable.PSVersion.Major -ge 5) {
+                    Write-Information $CleanEntry -InformationAction Continue
+                } else {
+                    Write-Output $CleanEntry
+                }
             }
         }
-    }
 
-    # File logging (always enabled unless ToConsoleOnly)
-    if (-not $ToConsoleOnly -and $Script:Context -and $Script:Context.LogFile) {
-        try {
-            # Check log rotation before writing
-            if ($Script:LoggingConfig.EnableLogRotation) {
-                Test-LogRotation -LogPath $Script:Context.LogFile
+        # File logging (always enabled unless ToConsoleOnly)
+        if (-not $ToConsoleOnly -and $Script:Context -and $Script:Context.LogFile) {
+            try {
+                # Check log rotation before writing
+                if ($Script:LoggingConfig.EnableLogRotation) {
+                    Test-LogRotation -LogPath $Script:Context.LogFile
+                }
+
+                Add-Content -Path $Script:Context.LogFile -Value $StructuredEntry -ErrorAction Stop
+            } catch {
+                Write-Warning "Failed to write to log file '$($Script:Context.LogFile)': $($_.Exception.Message)"
             }
-
-            Add-Content -Path $Script:Context.LogFile -Value $StructuredEntry -ErrorAction Stop -Encoding UTF8
-        } catch {
-            Write-Warning "Failed to write to log file '$($Script:Context.LogFile)': $($_.Exception.Message)"
+        }    # PowerShell streams for pipeline compatibility
+        switch ($Level) {
+            'DEBUG' { Write-Debug $Message }
+            'WARN' { Write-Warning $Message }
+            'ERROR' { Write-Error $Message -ErrorAction Continue }
+            'VERBOSE' { Write-Verbose $Message }
+            default { Write-Information $Message -InformationAction Continue }
         }
-    }
 
-    # PowerShell streams for pipeline compatibility
-    switch ($Level) {
-        'DEBUG' { Write-Debug $Message }
-        'WARN' { Write-Warning $Message }
-        'ERROR' { Write-Error $Message -ErrorAction Continue }
-        'VERBOSE' { Write-Verbose $Message }
-        default { Write-Information $Message -InformationAction Continue }
-    }
+        # Performance tracking and ContextForge integration
+        $logTimer.Stop()
+
+        # Track log operation performance if ContextForge integration is available
+        if ($Script:Context -and $Script:Context.InstanceId -and (Get-Command -Name 'Add-PerformanceMetric' -ErrorAction SilentlyContinue)) {
+            try {
+                Add-PerformanceMetric -Context $Script:Context -OperationName 'SmartLog-WriteOperation' -Duration $logTimer.Elapsed -OperationId $OperationId
+            } catch {
+                # Graceful degradation if ContextForge performance tracking fails
+            }
+        }
+
+        # Update context with enterprise tracking if available
+        if ($Script:Context -and $Level -eq 'ERROR') {
+            $Script:Context.HasError = $true
+
+            # Enhanced error tracking for ContextForge integration
+            if ($Script:Context.InstanceId -and $OperationId) {
+                $errorDetails = @{
+                    Timestamp   = Get-Date
+                    Level       = $Level
+                    Component   = $Component
+                    Message     = $Message
+                    UserImpact  = $UserImpact
+                    OperationId = $OperationId
+                    LogDuration = $logTimer.ElapsedMilliseconds
+                }
+                # Store error context for cross-tool communication if available
+                if (-not $Script:Context.ErrorLog) { $Script:Context.ErrorLog = @() }
+                $Script:Context.ErrorLog += $errorDetails
+            }
+        }
+    } # end process
 }
 
 <#
@@ -295,7 +434,7 @@ function Clear-OldLogs {
 
     $CutoffDate = (Get-Date).AddDays(-$Script:LoggingConfig.LogRetentionDays)
     $OldLogs = Get-ChildItem -Path $LogDirectory -Filter "*.log" |
-               Where-Object { $_.LastWriteTime -lt $CutoffDate }
+    Where-Object { $_.LastWriteTime -lt $CutoffDate }
 
     if ($OldLogs) {
         foreach ($LogFile in $OldLogs) {
@@ -345,7 +484,7 @@ function Compress-LogFile {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
 
         # Create temporary directory
-        $TempDir = New-TemporaryFile | ForEach-Object { 
+        $TempDir = New-TemporaryFile | ForEach-Object {
             Remove-Item $_ -Force
             New-Item -ItemType Directory -Path $_ -Force
         }
@@ -354,9 +493,9 @@ function Compress-LogFile {
         # Copy to temp and compress
         Copy-Item -Path $LogPath -Destination $TempLogPath -Force
         [System.IO.Compression.ZipFile]::CreateFromDirectory(
-            $TempDir.FullName, 
-            $CompressedPath, 
-            [System.IO.Compression.CompressionLevel]::Optimal, 
+            $TempDir.FullName,
+            $CompressedPath,
+            [System.IO.Compression.CompressionLevel]::Optimal,
             $false
         )
 
@@ -476,12 +615,12 @@ function Write-Error-Context {
     )
 
     $ErrorDetails = @{
-        Message = $ErrorRecord.Exception.Message
+        Message    = $ErrorRecord.Exception.Message
         ScriptName = $ErrorRecord.InvocationInfo.ScriptName
         LineNumber = $ErrorRecord.InvocationInfo.ScriptLineNumber
-        Command = $ErrorRecord.InvocationInfo.MyCommand.Name
-        Context = $Context
-        Timestamp = Get-Date -Format "o"
+        Command    = $ErrorRecord.InvocationInfo.MyCommand.Name
+        Context    = $Context
+        Timestamp  = Get-Date -Format "o"
     }
 
     # Add additional context
@@ -628,26 +767,68 @@ function Initialize-SmartLogging {
     param(
         [Parameter(Mandatory = $true)]
         [string]$ScriptName,
-        
+
         [Parameter(Mandatory = $false)]
         [string]$LogType = "Main",
-        
+
         [Parameter(Mandatory = $false)]
-        [string]$LogPath
+        [string]$LogPath,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Environment,
+
+        [Parameter(Mandatory = $false)]
+        [hashtable]$ContextForgeConfig,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$IsDebug = $false,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$Force
     )
 
-    $LogFile = if ($LogPath) { $LogPath } else { Get-SmartLogPath -ScriptName $ScriptName -LogType $LogType }
+    # Handle log file path determination first
+    if ($LogPath) {
+        # Check if LogPath is a directory
+        if ((Test-Path -Path $LogPath -PathType Container) -or
+            (-not (Test-Path -Path $LogPath) -and -not $LogPath.Contains("."))) {
+            # LogPath is a directory - generate a file name within it
+            $TimestampStr = Get-Date -Format "yyyyMMdd-HHmmss"
+            $LogFileName = "$ScriptName-$TimestampStr.log"
+            $LogFile = Join-Path -Path $LogPath -ChildPath $LogFileName
 
+            # Ensure directory exists
+            $LogDir = Split-Path -Path $LogFile -Parent
+            if (-not (Test-Path -Path $LogDir)) {
+                New-Item -Path $LogDir -ItemType Directory -Force | Out-Null
+            }
+        } else {
+            # LogPath is a file path - use as-is
+            $LogFile = $LogPath
+
+            # Ensure parent directory exists
+            $LogDir = Split-Path -Path $LogFile -Parent
+            if (-not (Test-Path -Path $LogDir)) {
+                New-Item -Path $LogDir -ItemType Directory -Force | Out-Null
+            }
+        }
+    } else {
+        # No LogPath provided - get default path
+        $LogFile = Get-SmartLogPath -ScriptName $ScriptName -LogType $LogType
+    }
+
+    # Create the script context object
     $Script:Context = [PSCustomObject]@{
-        ScriptName = $ScriptName
-        LogFile = $LogFile
-        HasError = $false
-        StartTime = Get-Date
+        ScriptName  = $ScriptName
+        LogFile     = $LogFile
+        LogPath     = Split-Path -Path $LogFile -Parent
+        HasError    = $false
+        StartTime   = Get-Date
         TestResults = @{}
         Environment = @{
-            IsProduction = $Script:LoggingConfig.IsProduction
+            IsProduction  = $Script:LoggingConfig.IsProduction
             IsDevelopment = $Script:LoggingConfig.IsDevelopment
-            IsCI = $Script:LoggingConfig.IsCI
+            IsCI          = $Script:LoggingConfig.IsCI
         }
     }
 
@@ -656,6 +837,13 @@ function Initialize-SmartLogging {
     Write-SmartLog "Environment: Production=$($Script:Context.Environment.IsProduction), Development=$($Script:Context.Environment.IsDevelopment), CI=$($Script:Context.Environment.IsCI)" -Level 'DEBUG'
 
     return $Script:Context
+}
+
+Write-SmartLog "Smart logging initialized for $ScriptName" -Level 'INFO'
+Write-SmartLog "Log file: $($Script:Context.LogFile)" -Level 'DEBUG'
+Write-SmartLog "Environment: Production=$($Script:Context.Environment.IsProduction), Development=$($Script:Context.Environment.IsDevelopment), CI=$($Script:Context.Environment.IsCI)" -Level 'DEBUG'
+
+return $Script:Context
 }
 
 function Get-SmartLogSummary {
@@ -670,12 +858,12 @@ function Get-SmartLogSummary {
 
     $Duration = (Get-Date) - $Script:Context.StartTime
     $Summary = [PSCustomObject]@{
-        ScriptName = $Script:Context.ScriptName
-        LogFile = $Script:Context.LogFile
-        Duration = $Duration
-        HasError = $Script:Context.HasError
-        TestResults = $Script:Context.TestResults
-        Environment = $Script:Context.Environment
+        ScriptName    = $Script:Context.ScriptName
+        LogFile       = $Script:Context.LogFile
+        Duration      = $Duration
+        HasError      = $Script:Context.HasError
+        TestResults   = $Script:Context.TestResults
+        Environment   = $Script:Context.Environment
         LoggingConfig = $Script:LoggingConfig
     }
 
@@ -702,7 +890,7 @@ Export-ModuleMember -Function @(
     'Get-SmartLogSummary',
     'Reset-SmartLogging',
     'Write-Progress-Start',
-    'Write-Progress-Update', 
+    'Write-Progress-Update',
     'Write-Progress-Complete',
     'Write-Section-Start',
     'Write-Section-End',

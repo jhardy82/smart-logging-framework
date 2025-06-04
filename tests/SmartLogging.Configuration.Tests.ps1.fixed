@@ -1,0 +1,503 @@
+#Requires -Version 5.1
+#Requires -Modules Pester
+
+<#
+.SYNOPSIS
+    Comprehensive Pester tests for SmartLogging Configuration Management functionality
+.DESCRIPTION
+    This test suite validates the configuration management components of SmartLogging.psm1,
+    including LoggingConfig structure, environment detection, ContextForge integration,
+    and helper functions for enterprise deployment scenarios.
+.NOTES
+    Created as part of ContextForge Phase 1.2 - Testing & Validation Enhancement
+    Tests cover configuration validation, environment detection, and ContextForge integration
+#>
+
+BeforeAll {
+    # Import the module under test
+    $ModulePath = Join-Path -Path $PSScriptRoot -ChildPath "..\src\src\core\SmartLogging.psm1"
+    Import-Module $ModulePath -Force -ErrorAction Stop
+
+    # Test data directory
+    $TestDataPath = Join-Path -Path $PSScriptRoot -ChildPath "TestData"
+    if (-not (Test-Path $TestDataPath)) {
+        New-Item -Path $TestDataPath -ItemType Directory -Force | Out-Null
+    }
+
+    # Helper function to reset module state
+    function Reset-SmartLoggingState {
+        # Remove module and re-import to reset internal state
+        Remove-Module SmartLogging -Force -ErrorAction SilentlyContinue
+        Import-Module $ModulePath -Force
+    }
+
+    # Helper function to create test ContextForge configuration
+    function New-TestContextForgeConfig {
+        param(
+            [hashtable]$Overrides = @{}
+        )
+
+        $BaseConfig = @{
+            AppName = "TestApp"
+            Version = "1.0.0"
+            Environment = "Test"
+            InstanceId = [guid]::NewGuid().ToString()
+            DeploymentPhase = "Development"
+            ToolName = "Pester"
+        }
+
+        foreach ($key in $Overrides.Keys) {
+            $BaseConfig[$key] = $Overrides[$key]
+        }
+
+        return $BaseConfig
+    }
+}
+
+Describe "SmartLogging Configuration Management" -Tag "Configuration", "Core" {
+
+    Context "LoggingConfig Structure Validation" {
+        BeforeEach {
+            Reset-SmartLoggingState
+        }
+
+        It "Should initialize with default configuration structure" {
+            # Act
+            Initialize-SmartLogging -ScriptName "ConfigTest.ps1" -LogPath $TestDataPath
+
+            # Assert - Access the internal LoggingConfig
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue            $Config | Should -Not -BeNullOrEmpty            $Config.Value | Should -BeOfType [hashtable]
+        }
+
+        It "Should contain required configuration keys" {
+            # Arrange
+            Initialize-SmartLogging -ScriptName "ConfigKeysTest.ps1" -LogPath $TestDataPath            # Act
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Assert
+            $Config.Value.Keys | Should -Contain "LogPath"
+            $Config.Value.Keys | Should -Contain "IsInitialized"
+            $Config.Value.Keys | Should -Contain "Environment"
+        }
+
+        It "Should maintain configuration consistency across multiple initializations" {
+            # Arrange
+            $FirstInit = Initialize-SmartLogging -ScriptName "ConsistencyTest1.ps1" -LogPath $TestDataPath
+            $FirstConfig = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue            # Act
+            $SecondInit = Initialize-SmartLogging -ScriptName "ConsistencyTest2.ps1" -LogPath $TestDataPath -Force
+            $SecondConfig = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Assert
+            $SecondConfig.Value.LogPath | Should -Be $FirstConfig.Value.LogPath
+            $SecondConfig.Value.Environment | Should -Be $FirstConfig.Value.Environment
+        }
+
+        It "Should validate configuration data types" {
+            # Arrange & Act
+            Initialize-SmartLogging -ScriptName "DataTypesTest.ps1" -LogPath $TestDataPath
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Assert
+            $Config.Value.LogPath | Should -BeOfType [string]
+            $Config.Value.IsInitialized | Should -BeOfType [bool]
+            $Config.Value.Environment | Should -BeOfType [string]
+        }
+    }
+
+    Context "Environment Detection" {
+
+        BeforeEach {
+            Reset-SmartLoggingState
+            # Clear any existing environment variables that might affect tests
+            $env:CI = $null
+            $env:BUILD_ID = $null
+            $env:GITHUB_ACTIONS = $null
+        }
+
+        AfterEach {
+            # Clean up environment variables            $env:CI = $null
+            $env:BUILD_ID = $null
+            $env:GITHUB_ACTIONS = $null
+        }
+
+        It "Should detect Development environment by default" {
+            # Act
+            Initialize-SmartLogging -ScriptName "EnvironmentTest.ps1" -LogPath $TestDataPath
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Assert            $Config.Value.Environment | Should -Match "(Development|Dev)"
+        }
+
+        It "Should detect CI environment when CI variables are present" {
+            # Arrange
+            $env:CI = "true"
+
+            # Act
+            Initialize-SmartLogging -ScriptName "CIEnvironmentTest.ps1" -LogPath $TestDataPath
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Assert            $Config.Value.Environment | Should -Match "(CI|Build)"
+        }
+
+        It "Should detect GitHub Actions environment" {
+            # Arrange
+            $env:GITHUB_ACTIONS = "true"
+
+            # Act
+            Initialize-SmartLogging -ScriptName "GitHubActionsTest.ps1" -LogPath $TestDataPath
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Assert            $Config.Value.Environment | Should -Match "(CI|GitHub|Actions)"
+        }
+
+        It "Should prioritize explicit environment parameter over detection" {
+            # Arrange
+            $env:CI = "true"
+
+            # Act
+            Initialize-SmartLogging -ScriptName "ExplicitEnvironmentTest.ps1" -LogPath $TestDataPath -Environment "Production"
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Assert            $Config.Value.Environment | Should -Be "Production"
+        }
+
+        It "Should handle multiple environment indicators correctly" {
+            # Arrange
+            $env:CI = "true"
+            $env:BUILD_ID = "12345"
+            $env:GITHUB_ACTIONS = "true"
+
+            # Act
+            Initialize-SmartLogging -ScriptName "MultipleEnvironmentTest.ps1" -LogPath $TestDataPath
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Assert
+            $Config.Value.Environment | Should -Not -BeNullOrEmpty
+            $Config.Value.Environment | Should -Match "(CI|Build|GitHub)"
+        }
+    }
+
+    Context "ContextForge Integration" {
+
+        BeforeEach {            Reset-SmartLoggingState
+        }
+
+        It "Should accept ContextForge configuration object" {
+            # Arrange
+            $ContextForgeConfig = New-TestContextForgeConfig
+
+            # Act
+            Initialize-SmartLogging -ScriptName "ContextForgeTest.ps1" -LogPath $TestDataPath -ContextForgeConfig $ContextForgeConfig
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Assert
+            $Config.Value | Should -Not -BeNullOrEmpty
+            $Config.Value.Keys | Should -Contain "ContextForge"
+        }
+
+        It "Should preserve ContextForge configuration data" {
+            # Arrange            $ContextForgeConfig = New-TestContextForgeConfig -Overrides @{
+                AppName = "TestApplication"
+                DeploymentPhase = "Production"
+                InstanceId = "test-instance-123"
+            }
+
+            # Act
+            Initialize-SmartLogging -ScriptName "ContextForgeDataTest.ps1" -LogPath $TestDataPath -ContextForgeConfig $ContextForgeConfig
+
+            # Log with ContextForge integration
+            Write-SmartLog -Message "Test message" -Level Info -ToolName $ContextForgeConfig.ToolName
+
+            # Assert - Check if ContextForge data is accessible
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+            $Config.Value.ContextForge.AppName | Should -Be "TestApplication"            $Config.Value.ContextForge.DeploymentPhase | Should -Be "Production"
+        }
+
+        It "Should handle missing ContextForge configuration gracefully" {
+            # Act
+            Initialize-SmartLogging -ScriptName "MissingContextForgeTest.ps1" -LogPath $TestDataPath
+            Write-SmartLog -Message "Test without ContextForge" -Level Info
+
+            # Assert - Should not throw errors
+            { Write-SmartLog -Message "Another test" -Level Warning } | Should -Not -Throw
+        }
+
+        It "Should integrate ContextForge data into log entries" {
+            # Arrange            $ContextForgeConfig = New-TestContextForgeConfig -Overrides @{
+                AppName = "ConfigTestApp"
+                InstanceId = "config-test-instance"
+                DeploymentPhase = "Testing"
+            }
+
+            # Act
+            Initialize-SmartLogging -ScriptName "ContextForgeIntegrationTest.ps1" -LogPath $TestDataPath -ContextForgeConfig $ContextForgeConfig
+            Write-SmartLog -Message "ContextForge integration test" -Level Info `
+                          -InstanceId $ContextForgeConfig.InstanceId `
+                          -DeploymentPhase $ContextForgeConfig.DeploymentPhase
+
+            # Assert - Verify log file contains ContextForge data
+            $LogFiles = Get-ChildItem -Path $TestDataPath -Filter "*.log" | Sort-Object CreationTime -Descending
+            $LogFiles | Should -Not -BeNullOrEmpty
+
+            $LogContent = Get-Content -Path $LogFiles[0].FullName -Raw
+            $LogContent | Should -Match "ConfigTestApp"
+            $LogContent | Should -Match "config-test-instance"
+            $LogContent | Should -Match "Testing"
+        }
+
+        It "Should validate ContextForge configuration structure" {
+            # Arrange
+            $InvalidConfig = @{
+                # Missing required fields
+                SomeRandomField = "value"
+            }
+
+            # Act & Assert
+            { Initialize-SmartLogging -ScriptName "InvalidContextForgeTest.ps1" -LogPath $TestDataPath -ContextForgeConfig $InvalidConfig } |
+                Should -Not -Throw  # Should be resilient to invalid configs
+        }
+    }
+
+    Context "Helper Functions" {
+
+        BeforeEach {
+            Reset-SmartLoggingState
+        }
+
+        It "Should provide Get-OrElse functionality for configuration fallbacks" {
+            # This test assumes Get-OrElse is available in the module
+            # If it's internal, we test indirectly through configuration behavior
+
+            # Arrange
+            Initialize-SmartLogging -ScriptName "GetOrElseTest.ps1" -LogPath $TestDataPath
+
+            # Act - Test with missing configuration value
+            $Result = Write-SmartLog -Message "Test fallback behavior" -Level Info
+
+            # Assert - Should complete without errors (fallback working)
+            $Result | Should -Not -BeNullOrEmpty
+        }
+
+        It "Should handle configuration value expansion" {
+            # Arrange
+            $ConfigWithVariables = New-TestContextForgeConfig -Overrides @{
+                LogPath = "%TEMP%\SmartLogging"
+                AppName = "TestApp"
+            }
+
+            # Act
+            Initialize-SmartLogging -ScriptName "ConfigExpansionTest.ps1" -LogPath $TestDataPath -ContextForgeConfig $ConfigWithVariables
+
+            # Assert - Environment variables should be expanded
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+            $Config.Value.LogPath | Should -Not -Match "%"
+        }
+
+        It "Should provide safe configuration access patterns" {
+            # Arrange
+            Initialize-SmartLogging -ScriptName "SafeConfigTest.ps1" -LogPath $TestDataPath
+
+            # Act - Access non-existent configuration value safely
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Assert - Should not throw when accessing non-existent keys
+            { $Config.Value.NonExistentKey } | Should -Not -Throw
+        }
+    }
+
+    Context "Configuration Performance" {
+
+        BeforeEach {
+            Reset-SmartLoggingState
+        }
+
+        It "Should initialize configuration within performance threshold" {            # Arrange
+            $MaxInitTime = 100  # milliseconds
+            
+            # Act
+            $InitTime = Measure-Command {
+                Initialize-SmartLogging -ScriptName "PerformanceTest.ps1" -LogPath $TestDataPath
+            }
+
+            # Assert
+            $InitTime.TotalMilliseconds | Should -BeLessThan $MaxInitTime
+        }
+
+        It "Should provide fast configuration access" {
+            # Arrange
+            Initialize-SmartLogging -ScriptName "FastAccessTest.ps1" -LogPath $TestDataPath
+            $MaxAccessTime = 10  # milliseconds
+
+            # Act
+            $AccessTime = Measure-Command {
+                1..100 | ForEach-Object {
+                    $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+                    $Config.Value.LogPath | Out-Null
+                }
+            }
+
+            # Assert
+            ($AccessTime.TotalMilliseconds / 100) | Should -BeLessThan $MaxAccessTime
+        }
+
+        It "Should handle large ContextForge configurations efficiently" {
+            # Arrange
+            $LargeConfig = New-TestContextForgeConfig
+            1..50 | ForEach-Object {
+                $LargeConfig["Property$_"] = "Value$_" * 100  # Create large values
+            }            # Act
+            $ConfigTime = Measure-Command {
+                Initialize-SmartLogging -ScriptName "LargeConfigTest.ps1" -LogPath $TestDataPath -ContextForgeConfig $LargeConfig
+            }
+
+            # Assert
+            $ConfigTime.TotalMilliseconds | Should -BeLessThan 200  # Even large configs should be fast
+        }
+    }
+
+    Context "Configuration State Management" {
+
+        BeforeEach {
+            Reset-SmartLoggingState
+        }
+
+        It "Should maintain configuration state across function calls" {
+            # Arrange
+            Initialize-SmartLogging -LogPath $TestDataPath
+            $InitialConfig = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Act
+            Write-SmartLog -Message "Test state maintenance" -Level Info
+            $PostLogConfig = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Assert
+            $PostLogConfig.Value.LogPath | Should -Be $InitialConfig.Value.LogPath
+            $PostLogConfig.Value.IsInitialized | Should -Be $InitialConfig.Value.IsInitialized
+        }
+
+        It "Should handle configuration updates correctly" {
+            # Arrange
+            Initialize-SmartLogging -ScriptName "ConfigUpdateTest.ps1" -LogPath $TestDataPath
+
+            # Act
+            Initialize-SmartLogging -ScriptName "ConfigUpdateTest.ps1" -LogPath $TestDataPath -Force
+            $UpdatedConfig = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Assert            $UpdatedConfig.Value.IsInitialized | Should -Be $true
+            $UpdatedConfig.Value.LogPath | Should -Be $TestDataPath
+        }
+
+        It "Should preserve configuration during concurrent operations" {
+            # Arrange
+            Initialize-SmartLogging -ScriptName "ConcurrentTest.ps1" -LogPath $TestDataPath
+
+            # Act - Simulate concurrent logging
+            $Jobs = 1..5 | ForEach-Object {
+                Start-Job -ScriptBlock {
+                    param($ModulePath, $TestDataPath)
+                    Import-Module $ModulePath -Force
+                    Write-SmartLog -Message "Concurrent test $_" -Level Info
+                } -ArgumentList $ModulePath, $TestDataPath
+            }
+
+            # Wait for jobs to complete
+            $Jobs | Wait-Job | Receive-Job
+            $Jobs | Remove-Job
+
+            # Assert - Configuration should remain intact
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+            $Config.Value.IsInitialized | Should -Be $true
+        }
+    }
+
+    Context "Cross-Platform Configuration" {
+
+        BeforeEach {
+            Reset-SmartLoggingState
+        }
+
+        It "Should handle Windows path configurations" {
+            # Skip if not on Windows
+            if ($PSVersionTable.Platform -and $PSVersionTable.Platform -ne "Win32NT") {
+                Set-ItResult -Skipped -Because "Windows-specific test"
+            }
+
+            # Arrange
+            $WindowsPath = "C:\Temp\SmartLogging"            # Act
+            Initialize-SmartLogging -ScriptName "WindowsPathTest.ps1" -LogPath $WindowsPath
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Assert
+            $Config.Value.LogPath | Should -Be $WindowsPath
+        }
+
+        It "Should handle Unix path configurations" {
+            # Skip if on Windows
+            if (-not $PSVersionTable.Platform -or $PSVersionTable.Platform -eq "Win32NT") {
+                Set-ItResult -Skipped -Because "Unix-specific test"
+            }
+
+            # Arrange
+            $UnixPath = "/tmp/smartlogging"            # Act
+            Initialize-SmartLogging -ScriptName "UnixPathTest.ps1" -LogPath $UnixPath
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Assert
+            $Config.Value.LogPath | Should -Be $UnixPath
+        }
+
+        It "Should normalize path separators for current platform" {
+            # Arrange
+            $MixedPath = "C:\Temp/SmartLogging\Logs"            # Act
+            Initialize-SmartLogging -ScriptName "PathNormalizationTest.ps1" -LogPath $MixedPath
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+
+            # Assert
+            $Config.Value.LogPath | Should -Not -Match "/"  # Should use platform-appropriate separators
+        }
+    }
+
+    Context "Configuration Error Handling" {        BeforeEach {
+            Reset-SmartLoggingState
+        }
+
+        It "Should handle null configuration gracefully" {
+            # Act & Assert            { Initialize-SmartLogging -ScriptName "NullConfigTest.ps1" -LogPath $TestDataPath -ContextForgeConfig $null } |
+                Should -Not -Throw
+        }
+
+        It "Should handle invalid path configurations" {
+            # Arrange
+            $InvalidPath = "Z:\NonExistent\Path\That\Does\Not\Exist"            # Act & Assert
+            { Initialize-SmartLogging -ScriptName "InvalidPathTest.ps1" -LogPath $InvalidPath } | Should -Not -Throw
+        }
+
+        It "Should recover from configuration corruption" {
+            # Arrange
+            Initialize-SmartLogging -ScriptName "CorruptionTest.ps1" -LogPath $TestDataPath
+
+            # Act - Simulate configuration corruption by directly manipulating
+            $Config = Get-Variable -Name "LoggingConfig" -Scope Script -ErrorAction SilentlyContinue
+            $Config.Value.IsInitialized = $null  # Corrupt the configuration
+            
+            # Assert - Should be able to re-initialize
+            { Initialize-SmartLogging -ScriptName "CorruptionTest.ps1" -LogPath $TestDataPath -Force } | Should -Not -Throw
+        }
+
+        It "Should validate configuration parameter types" {            # Act & Assert - Should handle type mismatches gracefully
+            { Initialize-SmartLogging -ScriptName "TypeValidationTest1.ps1" -LogPath $TestDataPath -Environment 123 } | Should -Not -Throw
+            { Initialize-SmartLogging -ScriptName "TypeValidationTest2.ps1" -LogPath $TestDataPath -ContextForgeConfig "not a hashtable" } | Should -Not -Throw
+        }
+    }
+
+    AfterAll {
+        # Cleanup test data
+        if (Test-Path $TestDataPath) {
+            Get-ChildItem -Path $TestDataPath -Recurse | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+            Remove-Item -Path $TestDataPath -Force -ErrorAction SilentlyContinue
+        }
+
+        # Reset module state
+        Remove-Module SmartLogging -Force -ErrorAction SilentlyContinue
+    }
+}
