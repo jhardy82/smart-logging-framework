@@ -54,7 +54,7 @@
     Displays logging summary in JSON format
 
 .NOTES
-    Author: Avanade Modern Workplace Engineering
+    Author: [EMPLOYER_NAME] Modern Workplace Engineering
     Version: 3.0.0
     Requires: PowerShell 5.1+
 #>
