@@ -9,13 +9,13 @@
     automatic log rotation, compression, performance tracking, and cross-platform support.
 
 .NOTES
-    Author: Avanade Modern Workplace Engineering
+    Author: [EMPLOYER_NAME] Modern Workplace Engineering
     Version: 3.0.0
     Compatible: PowerShell 5.1+ (Windows/Linux/macOS)
     License: MIT
 
 .LINK
-    https://github.com/avanade/smart-logging-framework
+    https://github.com/[EMPLOYER_NAME]/smart-logging-framework
 #>
 
 #region Module Initialization
@@ -25,8 +25,8 @@ $Script:PerformanceTimers = @{}
 #region Smart Logging Configuration
 $Script:LoggingConfig = [PSCustomObject]@{
     # Enhanced Environment Detection
-    IsProduction = $env:COMPUTERNAME -match '(PROD|PRD|CORP|ENTERPRISE|AVANADE)' -or
-                   $env:USERDNSDOMAIN -match '(corp|avanade|production)' -or
+    IsProduction = $env:COMPUTERNAME -match '(PROD|PRD|CORP|ENTERPRISE)' -or
+                   $env:USERDNSDOMAIN -match '(corp|production)' -or
                    ($PWD.Path -notmatch 'OneDrive|Development|Dev|temp|test' -and $env:USERPROFILE -notmatch 'OneDrive')
     
     IsDevelopment = $PWD.Path -match '(OneDrive|Development|Dev|temp|test)' -or 
@@ -40,7 +40,7 @@ $Script:LoggingConfig = [PSCustomObject]@{
 
     # Enhanced Logging Strategies
     LogLevel = if ($env:LOG_LEVEL) { $env:LOG_LEVEL }
-               elseif ($env:COMPUTERNAME -match '(PROD|PRD|CORP|ENTERPRISE|AVANADE)') { 'INFO' }
+               elseif ($env:COMPUTERNAME -match '(PROD|PRD|CORP|ENTERPRISE)') { 'INFO' }
                elseif ($PWD.Path -match '(OneDrive|Development|Dev|temp|test)') { 'DEBUG' }
                else { 'INFO' }
 
